@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="theme-color" content="#1b2430">
+<title>GPS Traverse (beta)</title>
+<style>
+:root{
+  --bg:#12171e; --panel:#1b2430; --line:#2c3a4a; --text:#e6edf3; --muted:#8b9bb0;
+  --accent:#3fb950; --accent2:#58a6ff; --warn:#d29922; --bad:#f85149;
+  --pt:#ffd166; --closing:#8b9bb0; --sel:#ff7b29; --edited:#c297ff; --typed:#39d0d8;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+  font:15px/1.35 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+body{display:flex;flex-direction:column}
+header{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;
+  background:var(--panel);border-bottom:1px solid var(--line)}
+header h1{font-size:16px;margin:0}
+header .tag{font-size:11px;color:var(--warn);border:1px solid var(--warn);border-radius:4px;padding:1px 5px;margin-left:6px}
+#gpsStat{font-size:12px;color:var(--muted);text-align:right}
+#gpsStat b{color:var(--text)}
+#stage{position:relative;flex:1;min-height:200px}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none}
+#empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);
+  text-align:center;padding:20px;pointer-events:none}
+#stats{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border-top:1px solid var(--line)}
+.stat{background:var(--panel);padding:6px 8px}
+.stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.stat .v{font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}
+.stat .s{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+#tbl{display:none;background:var(--panel);border-top:1px solid var(--line);font-size:13px}
+#tbl.on{display:block}
+#tbl .tabs{display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid var(--line)}
+#tbl .tabs button{padding:4px 12px;font-size:13px}
+#tbl .tabs button.on{background:var(--accent2);border-color:var(--accent2);color:#04121f;font-weight:700}
+#basisTag{margin-left:auto;color:var(--muted);font-size:12px}
+#tbl .scroll{max-height:24vh;overflow:auto}
+#tbl table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+#tbl td,#tbl th{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+#tbl th{color:var(--muted);font-weight:500;position:sticky;top:0;background:var(--panel)}
+#tbl tbody tr{cursor:pointer}
+#tbl tr.closing td{color:var(--closing);font-style:italic}
+#tbl tr.sel td{background:#ff7b2926;color:var(--sel)}
+#selBar{display:none;align-items:center;gap:6px;padding:8px 12px;background:#221a14;border-top:1px solid var(--sel);flex-wrap:wrap}
+#selBar.on{display:flex}
+#selBar .lbl{font-weight:700;color:var(--sel);margin-right:auto;font-variant-numeric:tabular-nums}
+#selBar .lbl small{display:block;font-weight:400;color:var(--text);font-size:12px}
+#selBar .hint{color:var(--muted);font-size:13px;margin-right:auto}
+#selBar button{padding:7px 10px;font-size:14px}
+#selBar .del{color:var(--bad)}
+#controls{display:flex;gap:8px;padding:10px 12px calc(10px + env(safe-area-inset-bottom));background:var(--panel);border-top:1px solid var(--line)}
+button{font:inherit;color:var(--text);background:#263241;border:1px solid var(--line);border-radius:8px;padding:10px 12px;cursor:pointer}
+button:active{transform:translateY(1px)}
+button:disabled{opacity:.4}
+button.active{background:var(--sel);border-color:var(--sel);color:#2a1205;font-weight:700}
+#btnCollect{flex:1;background:var(--accent);border-color:var(--accent);color:#06210d;font-weight:700;font-size:17px;padding:14px}
+#btnCollect.busy{background:var(--warn);border-color:var(--warn)}
+#menu{position:absolute;right:12px;bottom:12px;max-height:calc(100% - 24px);overflow:auto;background:var(--panel);
+  border:1px solid var(--line);border-radius:10px;display:none;flex-direction:column;min-width:220px;z-index:5;box-shadow:0 6px 24px #0008}
+#menu.open{display:flex}
+#menu button{border:0;border-radius:0;text-align:left;background:transparent;border-bottom:1px solid var(--line);flex-shrink:0}
+#menu label{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--line);gap:8px;flex-shrink:0}
+#menu select{font:inherit;background:#263241;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:2px 4px}
+#dlg{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;z-index:20;padding:16px}
+#dlg.open{display:flex}
+#dlg .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;width:100%;max-width:360px}
+#dlg h3{margin:0 0 4px;font-size:16px}
+#dlg .sub{color:var(--muted);font-size:12px;margin-bottom:10px}
+#dlg label{display:block;font-size:12px;color:var(--muted);margin:8px 0 3px}
+#dlg input{width:100%;font:inherit;font-size:17px;padding:9px 10px;background:#0f141a;color:var(--text);
+  border:1px solid var(--line);border-radius:8px;font-variant-numeric:tabular-nums}
+#dlg .row{display:flex;gap:8px;margin-top:14px}
+#dlg .row button{flex:1}
+#dlg .ok{background:var(--accent);border-color:var(--accent);color:#06210d;font-weight:700}
+#dlg .err{color:var(--bad);font-size:13px;min-height:18px;margin-top:6px}
+#toast{position:fixed;left:50%;top:60px;transform:translateX(-50%);background:#000c;color:#fff;padding:8px 14px;border-radius:8px;
+  font-size:14px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:30;max-width:90vw;text-align:center}
+#toast.show{opacity:1}
+</style>
+</head>
+<body>
+<header>
+  <div style="display:flex;align-items:center"><h1>GPS Traverse</h1><span class="tag">BETA</span></div>
+  <div id="gpsStat">GPS: <b>idle</b></div>
+</header>
+
+<div id="stage">
+  <canvas id="cv"></canvas>
+  <div id="empty">Tap <b>&nbsp;Collect Point&nbsp;</b> at each corner,<br>or add one by Northing/Easting from the ⋯ menu.</div>
+  <div id="menu">
+    <button id="btnTbl">Show table</button>
+    <button id="btnFit">Re-center view</button>
+    <button id="btnAddNE">Add point by N/E…</button>
+    <button id="btnClose">Open shape</button>
+    <label>Distances
+      <select id="selBasis">
+        <option value="ground">Ground (true N)</option>
+        <option value="grid">VA South grid</option>
+      </select>
+    </label>
+    <label>Fix window
+      <select id="selWin">
+        <option value="0">Single fix</option>
+        <option value="3">3 s best</option>
+        <option value="5" selected>5 s best</option>
+        <option value="10">10 s best</option>
+      </select>
+    </label>
+    <label>Simulate GPS <input type="checkbox" id="chkSim"></label>
+    <button id="btnCopy">Copy points (CSV)</button>
+    <button id="btnPNEZD">Download PNEZD file</button>
+    <button id="btnClear" style="color:var(--bad)">Clear all points</button>
+  </div>
+</div>
+
+<div id="stats">
+  <div class="stat"><div class="k">Points</div><div class="v" id="vPts">0</div><div class="s" id="vAcc">–</div></div>
+  <div class="stat"><div class="k">Perimeter</div><div class="v" id="vPer">–</div><div class="s" id="vPerM">–</div></div>
+  <div class="stat"><div class="k">Area</div><div class="v" id="vArea">–</div><div class="s" id="vAreaSf">–</div></div>
+</div>
+<div id="tbl">
+  <div class="tabs">
+    <button data-t="legs" class="on">Legs</button>
+    <button data-t="pts">Points</button>
+    <span id="basisTag"></span>
+  </div>
+  <div class="scroll"><table><thead id="tHead"></thead><tbody id="tBody"></tbody></table></div>
+</div>
+<div id="selBar"></div>
+
+<div id="controls">
+  <button id="btnUndo" title="Undo">↶</button>
+  <button id="btnEdit" title="Edit shape">✎ Edit</button>
+  <button id="btnCollect">Collect Point</button>
+  <button id="btnMenu" title="More">⋯</button>
+</div>
+
+<div id="dlg">
+  <div class="box">
+    <h3 id="dlgTitle">Point</h3>
+    <div class="sub">NAD83 Virginia South (4502) · US survey feet</div>
+    <label for="inN">Northing</label><input id="inN" inputmode="decimal" autocomplete="off">
+    <label for="inE">Easting</label><input id="inE" inputmode="decimal" autocomplete="off">
+    <label for="inZ">Elevation (ft, optional)</label><input id="inZ" inputmode="decimal" autocomplete="off">
+    <label for="inD">Description (optional)</label><input id="inD" autocomplete="off" placeholder="e.g. IPF, IRS, stone">
+    <div class="err" id="dlgErr"></div>
+    <div class="row"><button id="dlgCancel">Cancel</button><button id="dlgOk" class="ok">Save</button></div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = (n, d = 2) => Number(n).toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d});
+const FT_PER_M = 3937 / 1200; // US survey foot
+const STORE_KEY = 'gpsTraverseBeta.v1';
+
+/* ---------- NAD83 Virginia South (FIPS 4502) — Lambert Conformal Conic, 2SP, GRS80 ---------- */
+const SPC = (() => {
+  const a = 6378137, f = 1/298.257222101, e2 = 2*f - f*f, e = Math.sqrt(e2), r = Math.PI/180;
+  const p1 = (36 + 46/60)*r, p2 = (37 + 58/60)*r, p0 = (36 + 20/60)*r, l0 = -78.5*r;
+  const FE = 3500000, FN = 1000000; // meters
+  const M = p => Math.cos(p) / Math.sqrt(1 - e2*Math.sin(p)**2);
+  const T = p => Math.tan(Math.PI/4 - p/2) / Math.pow((1 - e*Math.sin(p)) / (1 + e*Math.sin(p)), e/2);
+  const n = (Math.log(M(p1)) - Math.log(M(p2))) / (Math.log(T(p1)) - Math.log(T(p2)));
+  const F = M(p1) / (n * Math.pow(T(p1), n));
+  const rho0 = a * F * Math.pow(T(p0), n);
+  function fwd(lat, lon){
+    const p = lat*r, rho = a*F*Math.pow(T(p), n), th = n*(lon*r - l0);
+    return {N: (FN + rho0 - rho*Math.cos(th)) * FT_PER_M, E: (FE + rho*Math.sin(th)) * FT_PER_M};
+  }
+  function inv(N, E){
+    const x = E/FT_PER_M - FE, y = rho0 - (N/FT_PER_M - FN);
+    const rho = Math.hypot(x, y), t = Math.pow(rho/(a*F), 1/n), th = Math.atan2(x, y);
+    let p = Math.PI/2 - 2*Math.atan(t);
+    for(let i = 0; i < 20; i++){
+      const s = e*Math.sin(p), pn = Math.PI/2 - 2*Math.atan(t*Math.pow((1 - s)/(1 + s), e/2));
+      if(Math.abs(pn - p) < 1e-14){ p = pn; break; } p = pn;
+    }
+    return {lat: p/r, lon: (th/n + l0)/r};
+  }
+  return {fwd, inv};
+})();
+const getNE = p => (p.N != null && p.E != null) ? {N: p.N, E: p.E} : SPC.fwd(p.lat, p.lon);
+
+/* ---------- state ---------- */
+let pts = [];            // {lat, lon, acc, z, d, t, src:'gps'|'edit'|'typed', N?, E?}
+let closed = true;
+let origin = null;       // fixed projection origin {lat, lon}
+let basis = 'ground';
+let tblMode = 'legs';
+let sel = null;          // {type:'pt'|'leg', i}
+let editOn = false;
+let hist = [];
+let view = {scale: 1, cx: 0, cy: 0, auto: true};
+let watchId = null;
+let geo = null;
+
+/* ---------- persistence / history ---------- */
+function save(){ try{ localStorage.setItem(STORE_KEY, JSON.stringify({pts, closed, origin, basis, win: $('selWin').value})); }catch(e){} }
+function load(){
+  try{
+    const d = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+    if(d){
+      pts = (d.pts || []).map(p => ({src:'gps', d:'', ...p}));
+      closed = d.closed !== false;
+      origin = d.origin || null;
+      basis = d.basis === 'grid' ? 'grid' : 'ground';
+      if(d.win != null) $('selWin').value = d.win;
+    }
+  }catch(e){}
+  $('selBasis').value = basis;
+  ensureOrigin();
+}
+function ensureOrigin(){
+  if(!pts.length) origin = null;
+  else if(!origin) origin = {lat: pts[0].lat, lon: pts[0].lon};
+}
+function snapshot(){ hist.push(JSON.stringify({pts, closed, origin})); if(hist.length > 60) hist.shift(); }
+function undo(){
+  if(!hist.length) return;
+  const s = JSON.parse(hist.pop()); pts = s.pts; closed = s.closed; origin = s.origin;
+  sel = null; view.auto = true; refresh(); toast('Undone');
+}
+
+/* ---------- plane coordinates (feet) ---------- */
+function mPerDeg(latDeg){
+  const p = latDeg * Math.PI / 180;
+  return {
+    lat: 111132.92 - 559.82*Math.cos(2*p) + 1.175*Math.cos(4*p) - 0.0023*Math.cos(6*p),
+    lon: 111412.84*Math.cos(p) - 93.5*Math.cos(3*p) + 0.118*Math.cos(5*p)
+  };
+}
+function toXY(p){
+  if(basis === 'grid'){ const o = SPC.fwd(origin.lat, origin.lon), q = getNE(p); return {x: q.E - o.E, y: q.N - o.N}; }
+  const k = mPerDeg(origin.lat);
+  return {x:(p.lon-origin.lon)*k.lon*FT_PER_M, y:(p.lat-origin.lat)*k.lat*FT_PER_M};
+}
+function fromXY(x, y){
+  if(basis === 'grid'){ const o = SPC.fwd(origin.lat, origin.lon); return SPC.inv(o.N + y, o.E + x); }
+  const k = mPerDeg(origin.lat);
+  return {lat: origin.lat + y/FT_PER_M/k.lat, lon: origin.lon + x/FT_PER_M/k.lon};
+}
+
+function bearingStr(dx, dy){
+  let az = Math.atan2(dx, dy) * 180 / Math.PI; if(az < 0) az += 360;
+  const ns = (az <= 90 || az >= 270) ? 'N' : 'S';
+  const ew = (az <= 180) ? 'E' : 'W';
+  const a = ns === 'N' ? (az <= 90 ? az : 360 - az) : (az <= 180 ? 180 - az : az - 180);
+  const tot = Math.round(a * 3600), d = Math.floor(tot/3600), m = Math.floor((tot%3600)/60), s = tot%60;
+  return `${ns} ${d}°${String(m).padStart(2,'0')}'${String(s).padStart(2,'0')}" ${ew}`;
+}
+function compute(){
+  const xy = pts.length ? pts.map(toXY) : [], n = xy.length, legs = [];
+  let per = 0, area2 = 0;
+  const addLeg = (a, b, closing) => {
+    const dx = xy[b].x-xy[a].x, dy = xy[b].y-xy[a].y, d = Math.hypot(dx, dy);
+    per += d; legs.push({i: legs.length, a, b, d, brg: bearingStr(dx, dy), closing});
+  };
+  for(let i=0;i<n-1;i++) addLeg(i, i+1, false);
+  const isClosed = closed && n >= 3;
+  if(isClosed){
+    addLeg(n-1, 0, true);
+    for(let i=0;i<n;i++){ const a=xy[i], b=xy[(i+1)%n]; area2 += a.x*b.y - b.x*a.y; }
+  }
+  return {xy, legs, per, area: Math.abs(area2)/2, isClosed};
+}
+function validateSel(){
+  if(!sel) return;
+  if(sel.type === 'pt' && sel.i >= pts.length) sel = null;
+  if(sel && sel.type === 'leg' && sel.i >= (geo ? geo.legs.length : 0)) sel = null;
+}
+
+/* ---------- drawing ---------- */
+const cv = $('cv'), ctx = cv.getContext('2d');
+const C = {}; ['--bg','--line','--text','--muted','--accent','--accent2','--pt','--closing','--sel','--edited','--typed']
+  .forEach(v => C[v] = getComputedStyle(document.documentElement).getPropertyValue(v).trim());
+const W = () => cv.clientWidth, H = () => cv.clientHeight;
+const toScreen = p => ({x: W()/2 + (p.x-view.cx)*view.scale, y: H()/2 - (p.y-view.cy)*view.scale});
+const toWorld = (sx, sy) => ({x: view.cx + (sx-W()/2)/view.scale, y: view.cy - (sy-H()/2)/view.scale});
+const ptColor = (P, i, n) => P.src==='typed' ? C['--typed'] : P.src==='edit' ? C['--edited'] : (i===n-1 ? C['--accent'] : C['--pt']);
+
+function resize(){
+  const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  cv.width = r.width*dpr; cv.height = r.height*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
+  draw();
+}
+function fitView(xy){
+  if(!xy.length){ view.scale = 1; view.cx = view.cy = 0; return; }
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  xy.forEach(p=>{minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y);});
+  const w = Math.max(maxX-minX, 20), h = Math.max(maxY-minY, 20), pad = 50;
+  view.scale = Math.min((W()-2*pad)/w, (H()-2*pad)/h);
+  view.cx = (minX+maxX)/2; view.cy = (minY+maxY)/2;
+}
+function niceStep(raw){ const p = Math.pow(10, Math.floor(Math.log10(raw))); const f = raw/p; return (f<1.5?1:f<3.5?2:f<7.5?5:10)*p; }
+
+function draw(){
+  const w = W(), h = H();
+  if(!geo) geo = compute();
+  const {xy, legs, isClosed} = geo;
+  if(view.auto) fitView(xy);
+  ctx.clearRect(0,0,w,h);
+
+  const step = niceStep(80/view.scale);
+  ctx.strokeStyle = C['--line']; ctx.lineWidth = 1; ctx.beginPath();
+  const tl = toWorld(0,0), br = toWorld(w,h);
+  for(let gx=Math.ceil(tl.x/step)*step; gx<=br.x; gx+=step){ const s=toScreen({x:gx,y:0}).x; ctx.moveTo(s,0); ctx.lineTo(s,h); }
+  for(let gy=Math.ceil(br.y/step)*step; gy<=tl.y; gy+=step){ const s=toScreen({x:0,y:gy}).y; ctx.moveTo(0,s); ctx.lineTo(w,s); }
+  ctx.stroke();
+
+  ctx.fillStyle = C['--muted']; ctx.strokeStyle = C['--muted']; ctx.font = '12px system-ui'; ctx.textAlign = 'left';
+  const bar = step*view.scale; ctx.beginPath(); ctx.moveTo(12,h-14); ctx.lineTo(12+bar,h-14); ctx.stroke();
+  ctx.fillText(`${step} ft`, 12, h-20);
+  ctx.beginPath(); ctx.moveTo(w-22,14); ctx.lineTo(w-28,30); ctx.lineTo(w-16,30); ctx.closePath(); ctx.fill();
+  ctx.fillText(basis === 'grid' ? 'GN' : 'N', basis === 'grid' ? w-30 : w-26, 44);
+  if(editOn){ ctx.fillStyle = C['--sel']; ctx.font = 'bold 12px system-ui'; ctx.fillText('EDIT MODE', 12, 20); }
+
+  $('empty').style.display = pts.length ? 'none' : 'flex';
+  if(!xy.length) return;
+  const sp = xy.map(toScreen);
+
+  if(isClosed){
+    ctx.beginPath(); sp.forEach((p,i)=> i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y)); ctx.closePath();
+    ctx.fillStyle = C['--accent2'] + '22'; ctx.fill();
+  }
+  legs.forEach(L=>{
+    const a = sp[L.a], b = sp[L.b], isSel = sel && sel.type==='leg' && sel.i===L.i;
+    ctx.setLineDash(L.closing && !isSel ? [7,6] : []);
+    ctx.strokeStyle = isSel ? C['--sel'] : L.closing ? C['--closing'] : C['--accent2'];
+    ctx.lineWidth = isSel ? 5 : L.closing ? 1.8 : 2.5;
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  });
+  ctx.setLineDash([]);
+  ctx.font = '11px system-ui'; ctx.textAlign = 'center';
+  legs.forEach(L=>{
+    const a = sp[L.a], b = sp[L.b], mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+    const t = fmt(L.d,1)+"'"; const tw = ctx.measureText(t).width + 6;
+    ctx.fillStyle = C['--bg'] + 'cc'; ctx.fillRect(mx-tw/2, my-8, tw, 15);
+    const isSel = sel && sel.type==='leg' && sel.i===L.i;
+    ctx.fillStyle = isSel ? C['--sel'] : L.closing ? C['--closing'] : C['--text']; ctx.fillText(t, mx, my+3);
+  });
+  sp.forEach((p,i)=>{
+    const P = pts[i], isSel = sel && sel.type==='pt' && sel.i===i;
+    const r = P.src==='gps' ? (P.acc||0)*FT_PER_M*view.scale : 0;
+    if(r > 3){ ctx.beginPath(); ctx.arc(p.x,p.y,r,0,7); ctx.fillStyle = C['--pt']+'18'; ctx.fill(); }
+    if(isSel){ ctx.beginPath(); ctx.arc(p.x,p.y,13,0,7); ctx.strokeStyle = C['--sel']; ctx.lineWidth = 3; ctx.stroke(); }
+    ctx.beginPath(); ctx.arc(p.x,p.y,6,0,7);
+    ctx.fillStyle = ptColor(P, i, sp.length); ctx.fill();
+    ctx.strokeStyle = C['--bg']; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = isSel ? C['--sel'] : C['--text']; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'left';
+    ctx.fillText(`${i+1}${P.d ? ' ' + P.d : ''}`, p.x+10, p.y-9);
+  });
+  ctx.textAlign = 'left';
+}
+
+/* ---------- stats / table / selection bar ---------- */
+const srcLabel = P => P.src==='gps' ? `±${fmt(P.acc*FT_PER_M,1)} ft` : P.src==='typed' ? 'typed N/E' : 'edited';
+function updateStats(){
+  geo = compute(); validateSel();
+  const {per, area, isClosed} = geo, tag = basis === 'grid' ? 'grid' : 'ground';
+  $('vPts').textContent = pts.length;
+  const last = pts.at(-1);
+  $('vAcc').textContent = last ? 'last ' + srcLabel(last) : '–';
+  if(pts.length >= 2){
+    $('vPer').textContent = fmt(per,1) + ' ft';
+    $('vPerM').textContent = `${fmt(per/FT_PER_M,1)} m · ${tag}` + (isClosed ? '' : ' · open');
+  } else { $('vPer').textContent = '–'; $('vPerM').textContent = '–'; }
+  if(isClosed){
+    $('vArea').textContent = fmt(area/43560,3) + ' ac';
+    $('vAreaSf').textContent = `${fmt(area,0)} sq ft · ${tag}`;
+  } else {
+    $('vArea').textContent = '–';
+    $('vAreaSf').textContent = pts.length >= 3 ? 'shape open' : pts.length ? 'need 3 pts' : '–';
+  }
+  renderTable();
+  $('btnUndo').disabled = !hist.length;
+  $('btnClose').textContent = closed ? 'Open shape (remove closing leg)' : 'Close shape';
+}
+function renderTable(){
+  document.querySelectorAll('#tbl .tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === tblMode));
+  $('basisTag').textContent = basis === 'grid' ? 'VA South grid' : 'Ground · true N';
+  if(tblMode === 'legs'){
+    $('tHead').innerHTML = '<tr><th>Leg</th><th>Bearing</th><th>Dist (ft)</th></tr>';
+    $('tBody').innerHTML = geo.legs.map(L =>
+      `<tr data-leg="${L.i}" class="${L.closing?'closing':''} ${sel&&sel.type==='leg'&&sel.i===L.i?'sel':''}">
+        <td>${L.a+1}→${L.b+1}</td><td>${L.brg}</td><td>${fmt(L.d,2)}</td></tr>`).join('');
+  } else {
+    $('tHead').innerHTML = '<tr><th>#</th><th>Northing</th><th>Easting</th><th>Desc</th></tr>';
+    $('tBody').innerHTML = pts.map((P,i) => { const q = getNE(P);
+      return `<tr data-pt="${i}" class="${sel&&sel.type==='pt'&&sel.i===i?'sel':''}">
+        <td>${i+1}</td><td>${fmt(q.N,2)}</td><td>${fmt(q.E,2)}</td><td>${esc(P.d||'')}</td></tr>`; }).join('');
+  }
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function renderSelBar(){
+  const bar = $('selBar');
+  if(!editOn){ bar.classList.remove('on'); return; }
+  bar.classList.add('on');
+  if(!sel){ bar.innerHTML = `<span class="hint">Tap a point or leg · drag points to move</span>`; return; }
+  const n = pts.length;
+  if(sel.type === 'pt'){
+    const i = sel.i, P = pts[i], q = getNE(P);
+    bar.innerHTML = `<span class="lbl">Point ${i+1}${P.d ? ' · ' + esc(P.d) : ''}
+        <small>N ${fmt(q.N,2)} · E ${fmt(q.E,2)}</small></span>
+      <button data-a="ptPrev" ${i===0?'disabled':''} title="Earlier in sequence">◀</button>
+      <button data-a="ptNext" ${i===n-1?'disabled':''} title="Later in sequence">▶</button>
+      <button data-a="ptEditNE">N/E…</button>
+      <button data-a="ptDel" class="del">Delete</button>
+      <button data-a="desel">✕</button>`;
+  } else {
+    const L = geo.legs[sel.i];
+    bar.innerHTML = `<span class="lbl">Leg ${L.a+1}→${L.b+1}<small>${L.brg} · ${fmt(L.d,2)} ft</small></span>
+      <button data-a="legSplit">+ Split</button>
+      <button data-a="legDel" class="del">${L.closing ? 'Open shape' : 'Delete'}</button>
+      <button data-a="desel">✕</button>`;
+  }
+}
+function refresh(){ updateStats(); renderSelBar(); save(); draw(); }
+
+/* ---------- N/E entry dialog ---------- */
+const num = s => { const v = parseFloat(String(s).replace(/[,\s]/g,'')); return Number.isFinite(v) ? v : null; };
+function dlgNE(title, init = {}){
+  return new Promise(resolve => {
+    $('dlgTitle').textContent = title;
+    $('inN').value = init.N != null ? init.N.toFixed(3) : '';
+    $('inE').value = init.E != null ? init.E.toFixed(3) : '';
+    $('inZ').value = init.z != null ? init.z.toFixed(2) : '';
+    $('inD').value = init.d || '';
+    $('dlgErr').textContent = '';
+    $('dlg').classList.add('open'); setTimeout(() => $('inN').focus(), 50);
+    const done = v => { $('dlg').classList.remove('open'); $('dlgOk').onclick = $('dlgCancel').onclick = null; resolve(v); };
+    $('dlgCancel').onclick = () => done(null);
+    $('dlgOk').onclick = () => {
+      let N = num($('inN').value), E = num($('inE').value);
+      const zs = $('inZ').value.trim(), z = zs ? num(zs) : null;
+      if(N == null || E == null){ $('dlgErr').textContent = 'Enter Northing and Easting.'; return; }
+      if(zs && z == null){ $('dlgErr').textContent = 'Elevation is not a number.'; return; }
+      // VA South in US ft: N ≈ 3.2–4.0 M, E ≈ 9.8–13.2 M
+      if(N > E && confirm('Northing is larger than Easting — swap them?')) [N, E] = [E, N];
+      if(N > 0.7e6 && N < 1.4e6 && E > 2.9e6 && E < 4.1e6 &&
+         confirm('These look like meters. Convert to US survey feet?')){ N *= FT_PER_M; E *= FT_PER_M; }
+      if(N < 3.0e6 || N > 4.2e6 || E < 9.5e6 || E > 13.5e6){
+        if(!confirm('Coordinates are outside the Virginia South zone range. Save anyway?')) return;
+      }
+      done({N, E, z, d: $('inD').value.trim()});
+    };
+  });
+}
+function insertIndex(){
+  if(editOn && sel){
+    if(sel.type === 'pt') return sel.i + 1;
+    const L = geo.legs[sel.i]; return L.closing ? pts.length : L.a + 1;
+  }
+  return pts.length;
+}
+async function addByNE(){
+  const v = await dlgNE('Add point by N/E'); if(!v) return;
+  const ll = SPC.inv(v.N, v.E), idx = insertIndex();
+  snapshot();
+  pts.splice(idx, 0, {lat: ll.lat, lon: ll.lon, acc: 0, z: v.z, d: v.d, t: Date.now(), src: 'typed', N: v.N, E: v.E});
+  if(!origin) origin = {lat: ll.lat, lon: ll.lon};
+  if(editOn && sel) sel = {type:'pt', i: idx};
+  view.auto = true; toast(`Point ${idx+1} added`); refresh();
+}
+
+/* ---------- edit actions ---------- */
+const mid = (p, q) => ({lat:(p.lat+q.lat)/2, lon:(p.lon+q.lon)/2, acc:0, z:null, d:'', t:Date.now(), src:'edit'});
+const actions = {
+  desel(){ sel = null; },
+  ptPrev(){ const i = sel.i; snapshot(); [pts[i-1], pts[i]] = [pts[i], pts[i-1]]; sel.i = i-1; },
+  ptNext(){ const i = sel.i; snapshot(); [pts[i+1], pts[i]] = [pts[i], pts[i+1]]; sel.i = i+1; },
+  ptDel(){ snapshot(); pts.splice(sel.i, 1); sel = null; ensureOrigin(); view.auto = true; },
+  async ptEditNE(){
+    const i = sel.i, P = pts[i], q = getNE(P);
+    const v = await dlgNE(`Point ${i+1}`, {N: q.N, E: q.E, z: P.z, d: P.d}); if(!v) return;
+    snapshot();
+    P.z = v.z; P.d = v.d;
+    if(Math.abs(v.N - q.N) > 0.0005 || Math.abs(v.E - q.E) > 0.0005){
+      const ll = SPC.inv(v.N, v.E);
+      Object.assign(P, {lat: ll.lat, lon: ll.lon, N: v.N, E: v.E, src: 'typed', acc: 0});
+    }
+  },
+  legSplit(){
+    const L = geo.legs[sel.i]; snapshot();
+    pts.splice(L.a+1, 0, mid(pts[L.a], pts[L.b]));
+    sel = {type:'pt', i:L.a+1};
+    toast('Point added — drag it into place');
+  },
+  legDel(){
+    const L = geo.legs[sel.i]; snapshot();
+    if(L.closing){ closed = false; sel = null; return; }
+    pts[L.a] = mid(pts[L.a], pts[L.b]); pts.splice(L.b, 1);
+    sel = {type:'pt', i:L.a};
+  }
+};
+$('selBar').addEventListener('click', async e=>{
+  const b = e.target.closest('button[data-a]'); if(!b || b.disabled) return;
+  await actions[b.dataset.a](); refresh();
+});
+$('tBody').addEventListener('click', e=>{
+  const tr = e.target.closest('tr'); if(!tr) return;
+  setEdit(true);
+  sel = tr.dataset.leg != null ? {type:'leg', i:+tr.dataset.leg} : {type:'pt', i:+tr.dataset.pt};
+  refresh();
+});
+document.querySelectorAll('#tbl .tabs button').forEach(b => b.onclick = () => { tblMode = b.dataset.t; renderTable(); });
+function setEdit(on){
+  editOn = on; if(!on) sel = null;
+  $('btnEdit').classList.toggle('active', on);
+  renderSelBar(); renderTable(); draw();
+}
+
+/* ---------- hit testing ---------- */
+function hit(sx, sy){
+  if(!geo || !geo.xy.length) return null;
+  const sp = geo.xy.map(toScreen);
+  let best = null, bd = 22;
+  sp.forEach((p,i)=>{ const d = Math.hypot(p.x-sx, p.y-sy); if(d < bd){ bd = d; best = {type:'pt', i}; } });
+  if(best) return best;
+  bd = 16;
+  geo.legs.forEach(L=>{
+    const a = sp[L.a], b = sp[L.b], vx=b.x-a.x, vy=b.y-a.y, len2 = vx*vx+vy*vy || 1;
+    const t = Math.max(0, Math.min(1, ((sx-a.x)*vx + (sy-a.y)*vy)/len2));
+    const d = Math.hypot(a.x+t*vx-sx, a.y+t*vy-sy);
+    if(d < bd){ bd = d; best = {type:'leg', i:L.i}; }
+  });
+  return best;
+}
+
+/* ---------- GPS ---------- */
+function setStat(html){ $('gpsStat').innerHTML = html; }
+function startWatch(){
+  if($('chkSim').checked) return;
+  if(!navigator.geolocation){ setStat('GPS: <b style="color:var(--bad)">not available</b>'); return; }
+  if(watchId != null) return;
+  watchId = navigator.geolocation.watchPosition(p=>{
+    const a = p.coords.accuracy*FT_PER_M;
+    const col = a<=15 ? 'var(--accent)' : a<=40 ? 'var(--warn)' : 'var(--bad)';
+    setStat(`GPS ±<b style="color:${col}">${fmt(a,0)} ft</b>`);
+  }, e=>{
+    setStat(`GPS: <b style="color:var(--bad)">${e.code===1?'permission denied':'no fix'}</b>`);
+  }, {enableHighAccuracy:true, maximumAge:0, timeout:20000});
+}
+function stopWatch(){ if(watchId!=null){ navigator.geolocation.clearWatch(watchId); watchId=null; } }
+
+function simFix(){
+  const base = pts.at(-1) || {lat:37.1290, lon:-82.4600};
+  const k = mPerDeg(base.lat), dist = (60 + Math.random()*190)/FT_PER_M;
+  const ang = (pts.length*72 + (Math.random()*40-20)) * Math.PI/180;
+  return {coords:{latitude: base.lat + dist*Math.cos(ang)/k.lat, longitude: base.lon + dist*Math.sin(ang)/k.lon,
+          accuracy: 2+Math.random()*5, altitude: 600 + Math.random()*20}, timestamp: Date.now()};
+}
+function getBestFix(seconds){
+  return new Promise((resolve, reject)=>{
+    if($('chkSim').checked) return setTimeout(()=>resolve(simFix()), 300);
+    if(!navigator.geolocation) return reject(new Error('Geolocation not supported'));
+    const opts = {enableHighAccuracy:true, maximumAge:0, timeout:20000};
+    if(seconds <= 0){ navigator.geolocation.getCurrentPosition(resolve, e=>reject(new Error(e.message)), opts); return; }
+    let best = null, left = seconds, id = null;
+    const btn = $('btnCollect');
+    const tick = setInterval(()=>{ left--; if(left>0) btn.textContent = `Sampling… ${left}s` + (best?` ±${fmt(best.coords.accuracy*FT_PER_M,0)}'`:''); }, 1000);
+    btn.textContent = `Sampling… ${left}s`;
+    const stop = () => { clearInterval(tick); clearTimeout(timer); if(id!=null) navigator.geolocation.clearWatch(id); };
+    const timer = setTimeout(()=>{ stop(); best ? resolve(best) : reject(new Error('No GPS fix')); }, seconds*1000);
+    id = navigator.geolocation.watchPosition(p=>{ if(!best || p.coords.accuracy < best.coords.accuracy) best = p; },
+      e=>{ if(e.code===1){ stop(); reject(new Error('Location permission denied')); } }, opts);
+  });
+}
+async function collect(){
+  const btn = $('btnCollect');
+  btn.disabled = true; btn.classList.add('busy'); btn.textContent = 'Getting fix…';
+  try{
+    const p = await getBestFix(+$('selWin').value);
+    const c = p.coords;
+    const np = {lat:c.latitude, lon:c.longitude, acc:c.accuracy, z: c.altitude != null ? c.altitude*FT_PER_M : null,
+                d:'', t:p.timestamp||Date.now(), src:'gps'};
+    const idx = insertIndex();
+    snapshot();
+    pts.splice(idx, 0, np);
+    if(!origin) origin = {lat: np.lat, lon: np.lon};
+    if(editOn && sel) sel = {type:'pt', i: idx};
+    view.auto = true;
+    if(navigator.vibrate) navigator.vibrate(60);
+    const q = getNE(np);
+    toast(`Point ${idx+1} saved ±${fmt(np.acc*FT_PER_M,1)} ft · N ${fmt(q.N,2)} E ${fmt(q.E,2)}`);
+    refresh();
+  }catch(e){ toast(e.message); }
+  finally{ btn.disabled = false; btn.classList.remove('busy'); btn.textContent = 'Collect Point'; }
+}
+
+/* ---------- pointer: tap-select, drag points, pan, pinch ---------- */
+let ptrs = new Map(), lastPinch = null, down = null;
+const rel = e => { const r = cv.getBoundingClientRect(); return {x:e.clientX-r.left, y:e.clientY-r.top}; };
+cv.addEventListener('pointerdown', e=>{
+  cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
+  if(ptrs.size === 1){ const p = rel(e); down = {x:p.x, y:p.y, h: editOn ? hit(p.x, p.y) : null, moved:false, dragging:false}; }
+  else down = null;
+});
+cv.addEventListener('pointermove', e=>{
+  if(!ptrs.has(e.pointerId)) return;
+  const prev = ptrs.get(e.pointerId); ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
+  if(ptrs.size === 1){
+    const p = rel(e);
+    if(down && !down.moved && Math.hypot(p.x-down.x, p.y-down.y) > 5) down.moved = true;
+    if(down && down.moved && down.h && down.h.type === 'pt'){
+      if(!down.dragging){ snapshot(); down.dragging = true; sel = down.h; view.auto = false; }
+      const w = toWorld(p.x, p.y), ll = fromXY(w.x, w.y), P = pts[down.h.i];
+      P.lat = ll.lat; P.lon = ll.lon; P.src = 'edit'; P.acc = 0; delete P.N; delete P.E;
+      updateStats(); renderSelBar(); draw();
+      return;
+    }
+    if(down && !down.moved) return;
+    view.auto = false; view.cx -= (e.clientX-prev.x)/view.scale; view.cy += (e.clientY-prev.y)/view.scale; draw();
+  } else if(ptrs.size === 2){
+    const [a,b] = [...ptrs.values()], d = Math.hypot(a.x-b.x, a.y-b.y);
+    if(lastPinch){ view.auto = false; view.scale *= d/lastPinch; draw(); }
+    lastPinch = d;
+  }
+});
+const endPtr = e=>{
+  ptrs.delete(e.pointerId); if(ptrs.size < 2) lastPinch = null;
+  if(down && ptrs.size === 0){
+    if(down.dragging) refresh();
+    else if(!down.moved && editOn){ sel = down.h; refresh(); }
+    down = null;
+  }
+};
+cv.addEventListener('pointerup', endPtr); cv.addEventListener('pointercancel', endPtr);
+cv.addEventListener('wheel', e=>{ e.preventDefault(); view.auto=false; view.scale *= e.deltaY<0?1.15:1/1.15; draw(); }, {passive:false});
+
+/* ---------- export ---------- */
+function csvRows(){
+  return pts.map((P,i)=>{ const q = getNE(P);
+    return {i: i+1, N: q.N.toFixed(3), E: q.E.toFixed(3), z: P.z != null ? P.z.toFixed(2) : '',
+            lat: P.lat.toFixed(9), lon: P.lon.toFixed(9), acc: P.src==='gps' ? (P.acc*FT_PER_M).toFixed(1) : '',
+            src: P.src, d: (P.d||'').replace(/[",\n]/g,' ')}; });
+}
+
+/* ---------- UI wiring ---------- */
+let toastT;
+function toast(m){ const t=$('toast'); t.textContent=m; t.classList.add('show'); clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('show'),2600); }
+const closeMenu = () => $('menu').classList.remove('open');
+
+$('btnCollect').onclick = collect;
+$('btnUndo').onclick = undo;
+$('btnEdit').onclick = () => setEdit(!editOn);
+$('btnMenu').onclick = e=>{ e.stopPropagation(); $('menu').classList.toggle('open'); };
+document.addEventListener('click', e=>{ if(!$('menu').contains(e.target) && e.target !== $('btnMenu')) closeMenu(); });
+$('btnFit').onclick = ()=>{ view.auto = true; draw(); closeMenu(); };
+$('btnAddNE').onclick = ()=>{ closeMenu(); addByNE(); };
+$('btnClose').onclick = ()=>{ snapshot(); closed = !closed; refresh(); closeMenu(); };
+$('btnTbl').onclick = ()=>{
+  const on = $('tbl').classList.toggle('on');
+  $('btnTbl').textContent = on ? 'Hide table' : 'Show table'; closeMenu(); resize();
+};
+$('selBasis').onchange = ()=>{ basis = $('selBasis').value; view.auto = true; refresh(); };
+$('btnClear').onclick = ()=>{
+  if(pts.length && confirm('Clear all points? (Undo can restore)')){ snapshot(); pts=[]; closed=true; origin=null; sel=null; view.auto=true; refresh(); }
+  closeMenu();
+};
+$('btnCopy').onclick = async ()=>{
+  const csv = 'pt,northing_ft,easting_ft,elev_ft,lat,lon,acc_ft,src,desc\n' +
+    csvRows().map(r => [r.i, r.N, r.E, r.z, r.lat, r.lon, r.acc, r.src, r.d].join(',')).join('\n');
+  try{ await navigator.clipboard.writeText(csv); toast('CSV copied (NAD83 VA South, US ft)'); }catch(e){ prompt('Copy:', csv); }
+  closeMenu();
+};
+$('btnPNEZD').onclick = ()=>{
+  if(!pts.length){ toast('No points'); closeMenu(); return; }
+  const txt = csvRows().map(r => [r.i, r.N, r.E, r.z || '0', r.d].join(',')).join('\r\n') + '\r\n';
+  const a = document.createElement('a'), d = new Date();
+  a.href = URL.createObjectURL(new Blob([txt], {type:'text/csv'}));
+  a.download = `traverse_VAS_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}.csv`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+  closeMenu();
+};
+$('selWin').onchange = save;
+$('chkSim').onchange = ()=>{
+  if($('chkSim').checked){ stopWatch(); setStat('GPS: <b style="color:var(--warn)">SIMULATED</b>'); }
+  else { setStat('GPS: <b>starting…</b>'); startWatch(); }
+};
+document.addEventListener('visibilitychange', ()=>{ document.hidden ? stopWatch() : startWatch(); });
+window.addEventListener('resize', resize);
+new ResizeObserver(resize).observe($('stage'));
+
+load();
+refresh();
+resize();
+setStat('GPS: <b>starting…</b>');
+startWatch();
+</script>
+</body>
+</html>
