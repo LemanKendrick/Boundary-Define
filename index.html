@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <meta name="theme-color" content="#1b2430">
 <title>GPS Traverse (beta)</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <style>
 :root{
   --bg:#12171e; --panel:#1b2430; --line:#2c3a4a; --text:#e6edf3; --muted:#8b9bb0;
@@ -690,6 +694,11 @@ refresh();
 resize();
 setStat('GPS: <b>starting…</b>');
 startWatch();
+
+/* ---------- offline support ---------- */
+if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+// ask the browser not to evict saved points under storage pressure
+if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});
 </script>
 </body>
 </html>
