@@ -96,6 +96,22 @@ button.active{background:var(--sel);border-color:var(--sel);color:#2a1205;font-w
   <div id="menu">
     <button id="btnTbl">Show table</button>
     <button id="btnFit">Re-center view</button>
+    <button id="btnMe">Center on my location</button>
+    <label>Background
+      <select id="selMap">
+        <option value="off">None (grid)</option>
+        <option value="vgin" selected>VGIN imagery (VA)</option>
+        <option value="esri">Esri World Imagery</option>
+        <option value="usgs">USGS imagery</option>
+      </select>
+    </label>
+    <label>Imagery opacity
+      <select id="selOp">
+        <option value="1">100%</option>
+        <option value="0.75">75%</option>
+        <option value="0.5">50%</option>
+      </select>
+    </label>
     <button id="btnAddNE">Add point by N/E…</button>
     <button id="btnClose">Open shape</button>
     <label>Distances
@@ -201,9 +217,11 @@ let hist = [];
 let view = {scale: 1, cx: 0, cy: 0, auto: true};
 let watchId = null;
 let geo = null;
+let mapSrc = 'vgin', mapOp = 1;
+let liveFix = null;      // latest position from the background GPS watch
 
 /* ---------- persistence / history ---------- */
-function save(){ try{ localStorage.setItem(STORE_KEY, JSON.stringify({pts, closed, origin, basis, win: $('selWin').value})); }catch(e){} }
+function save(){ try{ localStorage.setItem(STORE_KEY, JSON.stringify({pts, closed, origin, basis, mapSrc, mapOp, win: $('selWin').value})); }catch(e){} }
 function load(){
   try{
     const d = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
@@ -213,14 +231,18 @@ function load(){
       origin = d.origin || null;
       basis = d.basis === 'grid' ? 'grid' : 'ground';
       if(d.win != null) $('selWin').value = d.win;
+      if(d.mapSrc) mapSrc = d.mapSrc;
+      if(d.mapOp) mapOp = +d.mapOp;
     }
   }catch(e){}
   $('selBasis').value = basis;
+  $('selMap').value = mapSrc;
+  $('selOp').value = String(mapOp);
   ensureOrigin();
 }
 function ensureOrigin(){
-  if(!pts.length) origin = null;
-  else if(!origin) origin = {lat: pts[0].lat, lon: pts[0].lon};
+  if(pts.length){ if(!origin) origin = {lat: pts[0].lat, lon: pts[0].lon}; }
+  else origin = liveFix ? {lat: liveFix.lat, lon: liveFix.lon} : null;
 }
 function snapshot(){ hist.push(JSON.stringify({pts, closed, origin})); if(hist.length > 60) hist.shift(); }
 function undo(){
@@ -286,13 +308,100 @@ const toScreen = p => ({x: W()/2 + (p.x-view.cx)*view.scale, y: H()/2 - (p.y-vie
 const toWorld = (sx, sy) => ({x: view.cx + (sx-W()/2)/view.scale, y: view.cy - (sy-H()/2)/view.scale});
 const ptColor = (P, i, n) => P.src==='typed' ? C['--typed'] : P.src==='edit' ? C['--edited'] : (i===n-1 ? C['--accent'] : C['--pt']);
 
+/* ---------- imagery background (Web Mercator tiles warped into the plot plane) ---------- */
+const MAPS = {
+  vgin: {max: 19, fb: 'esri', attr: 'Imagery © VGIN / VBMP',
+         url: (z,x,y) => `https://vginmaps.vdem.virginia.gov/arcgis/rest/services/VBMP_Imagery/MostRecentImagery_WGS/MapServer/tile/${z}/${y}/${x}`},
+  esri: {max: 19, attr: 'Imagery © Esri, Maxar, Earthstar Geographics',
+         url: (z,x,y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`},
+  usgs: {max: 16, attr: 'Imagery: USGS The National Map',
+         url: (z,x,y) => `https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/${z}/${y}/${x}`}
+};
+const tiles = new Map();   // LRU: key -> {img, state}
+let drawPending = false;
+function scheduleDraw(){ if(drawPending) return; drawPending = true; requestAnimationFrame(() => { drawPending = false; draw(); }); }
+function getTile(src, z, x, y){
+  const k = `${src}/${z}/${x}/${y}`; let t = tiles.get(k);
+  if(t){ tiles.delete(k); tiles.set(k, t); return t; }
+  t = {state: 'loading', img: new Image()};
+  t.img.onload = () => { t.state = 'ok'; scheduleDraw(); };
+  t.img.onerror = () => { t.state = 'err'; scheduleDraw(); };
+  t.img.src = MAPS[src].url(z, x, y);
+  tiles.set(k, t);
+  if(tiles.size > 600) tiles.delete(tiles.keys().next().value);
+  return t;
+}
+const lon2tx = (lon, n) => (lon + 180) / 360 * n;
+const lat2ty = (lat, n) => { const r = lat*Math.PI/180; return (1 - Math.log(Math.tan(r) + 1/Math.cos(r))/Math.PI) / 2 * n; };
+const tx2lon = (x, n) => x / n * 360 - 180;
+const ty2lat = (y, n) => Math.atan(Math.sinh(Math.PI*(1 - 2*y/n))) * 180 / Math.PI;
+const mapOn = () => mapSrc !== 'off' && MAPS[mapSrc] && origin;
+
+function drawTiles(){
+  const M = MAPS[mapSrc], w = W(), h = H();
+  const corners = [[0,0],[w,0],[0,h],[w,h]].map(([sx,sy]) => { const q = toWorld(sx, sy); return fromXY(q.x, q.y); });
+  let z = Math.ceil(Math.log2(156543.034 * Math.cos(origin.lat*Math.PI/180) * view.scale * FT_PER_M) - 0.3);
+  z = Math.max(3, Math.min(M.max, z));
+  let x0, x1, y0, y1;
+  for(;;){
+    const n = 2**z, xs = corners.map(c => lon2tx(c.lon, n)), ys = corners.map(c => lat2ty(c.lat, n));
+    x0 = Math.floor(Math.min(...xs)); x1 = Math.floor(Math.max(...xs));
+    y0 = Math.floor(Math.min(...ys)); y1 = Math.floor(Math.max(...ys));
+    if((x1-x0+1)*(y1-y0+1) <= 160 || z <= 3) break;
+    z--;
+  }
+  ctx.save(); ctx.globalAlpha = mapOp;
+  for(let ty = y0; ty <= y1; ty++) for(let tx = x0; tx <= x1; tx++) drawOneTile(z, tx, ty);
+  ctx.restore();
+}
+function drawOneTile(z, x, y){
+  let src = mapSrc, t = getTile(src, z, x, y);
+  if(t.state === 'err' && MAPS[mapSrc].fb){ src = MAPS[mapSrc].fb; t = getTile(src, z, x, y); }
+  const n = 2**z, c = (tx, ty) => toScreen(toXY({lat: ty2lat(ty, n), lon: tx2lon(tx, n)}));
+  const A = c(x, y), B = c(x+1, y), D = c(x, y+1);
+  const put = (img, sx, sy, ss) => {
+    ctx.save();
+    ctx.transform((B.x-A.x)/256, (B.y-A.y)/256, (D.x-A.x)/256, (D.y-A.y)/256, A.x, A.y);
+    ctx.drawImage(img, sx, sy, ss, ss, -0.3, -0.3, 256.6, 256.6);
+    ctx.restore();
+  };
+  if(t.state === 'ok'){ put(t.img, 0, 0, 256); return; }
+  // still loading: stretch a lower-zoom tile that is already loaded
+  for(let k = 1; k <= 6 && z-k >= 0; k++){
+    const px = x >> k, py = y >> k, key = `/${z-k}/${px}/${py}`;
+    const p = tiles.get(src + key) || tiles.get(mapSrc + key);
+    if(p && p.state === 'ok'){ const ss = 256 / 2**k; put(p.img, (x - (px << k))*ss, (y - (py << k))*ss, ss); return; }
+  }
+}
+function drawLive(){
+  if(!liveFix || !origin) return;
+  const s = toScreen(toXY(liveFix)), r = liveFix.acc*FT_PER_M*view.scale;
+  if(r > 8){ ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, 7); ctx.fillStyle = '#58a6ff22'; ctx.fill();
+    ctx.strokeStyle = '#58a6ff88'; ctx.lineWidth = 1; ctx.stroke(); }
+  ctx.beginPath(); ctx.arc(s.x, s.y, 7, 0, 7); ctx.fillStyle = '#1f6feb'; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.stroke();
+}
+function drawAttr(){
+  if(!mapOn()) return;
+  const t = MAPS[mapSrc].attr, w = W(), h = H();
+  ctx.font = '10px system-ui'; ctx.textAlign = 'right';
+  const tw = ctx.measureText(t).width;
+  ctx.fillStyle = '#000a'; ctx.fillRect(w - tw - 10, h - 16, tw + 10, 16);
+  ctx.fillStyle = '#ddd'; ctx.fillText(t, w - 5, h - 4.5);
+  ctx.textAlign = 'left';
+}
+
 function resize(){
   const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
   cv.width = r.width*dpr; cv.height = r.height*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
   draw();
 }
 function fitView(xy){
-  if(!xy.length){ view.scale = 1; view.cx = view.cy = 0; return; }
+  if(!xy.length){
+    if(liveFix && origin){ const q = toXY(liveFix); view.cx = q.x; view.cy = q.y; view.scale = Math.min(W(), H()) / 400; }
+    else { view.scale = 1; view.cx = view.cy = 0; }
+    return;
+  }
   let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
   xy.forEach(p=>{minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y);});
   const w = Math.max(maxX-minX, 20), h = Math.max(maxY-minY, 20), pad = 50;
@@ -309,11 +418,18 @@ function draw(){
   ctx.clearRect(0,0,w,h);
 
   const step = niceStep(80/view.scale);
-  ctx.strokeStyle = C['--line']; ctx.lineWidth = 1; ctx.beginPath();
-  const tl = toWorld(0,0), br = toWorld(w,h);
-  for(let gx=Math.ceil(tl.x/step)*step; gx<=br.x; gx+=step){ const s=toScreen({x:gx,y:0}).x; ctx.moveTo(s,0); ctx.lineTo(s,h); }
-  for(let gy=Math.ceil(br.y/step)*step; gy<=tl.y; gy+=step){ const s=toScreen({x:0,y:gy}).y; ctx.moveTo(0,s); ctx.lineTo(w,s); }
-  ctx.stroke();
+  if(mapOn()){
+    drawTiles();
+    ctx.fillStyle = '#000a';
+    ctx.fillRect(6, h-36, step*view.scale + 14, 30);
+    ctx.fillRect(w-36, 8, 30, 42);
+  } else {
+    ctx.strokeStyle = C['--line']; ctx.lineWidth = 1; ctx.beginPath();
+    const tl = toWorld(0,0), br = toWorld(w,h);
+    for(let gx=Math.ceil(tl.x/step)*step; gx<=br.x; gx+=step){ const s=toScreen({x:gx,y:0}).x; ctx.moveTo(s,0); ctx.lineTo(s,h); }
+    for(let gy=Math.ceil(br.y/step)*step; gy<=tl.y; gy+=step){ const s=toScreen({x:0,y:gy}).y; ctx.moveTo(0,s); ctx.lineTo(w,s); }
+    ctx.stroke();
+  }
 
   ctx.fillStyle = C['--muted']; ctx.strokeStyle = C['--muted']; ctx.font = '12px system-ui'; ctx.textAlign = 'left';
   const bar = step*view.scale; ctx.beginPath(); ctx.moveTo(12,h-14); ctx.lineTo(12+bar,h-14); ctx.stroke();
@@ -322,8 +438,8 @@ function draw(){
   ctx.fillText(basis === 'grid' ? 'GN' : 'N', basis === 'grid' ? w-30 : w-26, 44);
   if(editOn){ ctx.fillStyle = C['--sel']; ctx.font = 'bold 12px system-ui'; ctx.fillText('EDIT MODE', 12, 20); }
 
-  $('empty').style.display = pts.length ? 'none' : 'flex';
-  if(!xy.length) return;
+  $('empty').style.display = (pts.length || liveFix) ? 'none' : 'flex';
+  if(!xy.length){ drawLive(); drawAttr(); return; }
   const sp = xy.map(toScreen);
 
   if(isClosed){
@@ -355,9 +471,14 @@ function draw(){
     ctx.fillStyle = ptColor(P, i, sp.length); ctx.fill();
     ctx.strokeStyle = C['--bg']; ctx.lineWidth = 2; ctx.stroke();
     ctx.fillStyle = isSel ? C['--sel'] : C['--text']; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'left';
-    ctx.fillText(`${i+1}${P.d ? ' ' + P.d : ''}`, p.x+10, p.y-9);
+    const lab = `${i+1}${P.d ? ' ' + P.d : ''}`;
+    if(mapOn()){ const lw = ctx.measureText(lab).width; ctx.fillStyle = '#000b'; ctx.fillRect(p.x+7, p.y-22, lw+6, 17);
+      ctx.fillStyle = isSel ? C['--sel'] : C['--text']; }
+    ctx.fillText(lab, p.x+10, p.y-9);
   });
   ctx.textAlign = 'left';
+  drawLive();
+  drawAttr();
 }
 
 /* ---------- stats / table / selection bar ---------- */
@@ -541,6 +662,9 @@ function startWatch(){
   if(!navigator.geolocation){ setStat('GPS: <b style="color:var(--bad)">not available</b>'); return; }
   if(watchId != null) return;
   watchId = navigator.geolocation.watchPosition(p=>{
+    liveFix = {lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy};
+    if(!origin){ ensureOrigin(); view.auto = true; }
+    scheduleDraw();
     const a = p.coords.accuracy*FT_PER_M;
     const col = a<=15 ? 'var(--accent)' : a<=40 ? 'var(--warn)' : 'var(--bad)';
     setStat(`GPS ±<b style="color:${col}">${fmt(a,0)} ft</b>`);
@@ -660,9 +784,18 @@ $('btnTbl').onclick = ()=>{
   const on = $('tbl').classList.toggle('on');
   $('btnTbl').textContent = on ? 'Hide table' : 'Show table'; closeMenu(); resize();
 };
+$('btnMe').onclick = ()=>{
+  closeMenu();
+  if(!liveFix){ toast('No GPS fix yet'); return; }
+  const q = toXY(liveFix); view.auto = false; view.cx = q.x; view.cy = q.y;
+  if(view.scale < Math.min(W(), H())/1500) view.scale = Math.min(W(), H())/400;
+  draw();
+};
+$('selMap').onchange = ()=>{ mapSrc = $('selMap').value; save(); draw(); };
+$('selOp').onchange = ()=>{ mapOp = +$('selOp').value; save(); draw(); };
 $('selBasis').onchange = ()=>{ basis = $('selBasis').value; view.auto = true; refresh(); };
 $('btnClear').onclick = ()=>{
-  if(pts.length && confirm('Clear all points? (Undo can restore)')){ snapshot(); pts=[]; closed=true; origin=null; sel=null; view.auto=true; refresh(); }
+  if(pts.length && confirm('Clear all points? (Undo can restore)')){ snapshot(); pts=[]; closed=true; origin=null; ensureOrigin(); sel=null; view.auto=true; refresh(); }
   closeMenu();
 };
 $('btnCopy').onclick = async ()=>{
@@ -682,7 +815,7 @@ $('btnPNEZD').onclick = ()=>{
 };
 $('selWin').onchange = save;
 $('chkSim').onchange = ()=>{
-  if($('chkSim').checked){ stopWatch(); setStat('GPS: <b style="color:var(--warn)">SIMULATED</b>'); }
+  if($('chkSim').checked){ stopWatch(); liveFix = null; draw(); setStat('GPS: <b style="color:var(--warn)">SIMULATED</b>'); }
   else { setStat('GPS: <b>starting…</b>'); startWatch(); }
 };
 document.addEventListener('visibilitychange', ()=>{ document.hidden ? stopWatch() : startWatch(); });
